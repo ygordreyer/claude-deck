@@ -24,6 +24,7 @@ MAX_HISTORY = 400
 # Permission presets shown in the UI, mapped to Claude Code permission modes.
 MODES = {"ask": "default", "edits": "acceptEdits", "plan": "plan", "auto": "auto", "trust": "bypassPermissions"}
 MODELS = ("default", "opus", "fable", "sonnet", "haiku")
+EFFORTS = ("default", "low", "medium", "high", "xhigh", "max")
 THEMES = ("claude", "midnight", "tokyo", "minecraft", "steamos")
 VOICES = ("off", "voice", "always")
 # Hold-to-talk and dictation chords: presets like "l4r4", "off", or recorded "m:<low>:<high>" masks.
@@ -255,6 +256,7 @@ class Plugin:
         self.info = {}
         self.mode = "ask"
         self.model = "default"
+        self.effort = "default"
         self.theme = "claude"
         self.voice = "voice"
         self.spoken = []  # per queued user message: was it spoken?
@@ -301,6 +303,7 @@ class Plugin:
             self.usage = data.get("usage")
             self.mode = data.get("mode", "ask") if data.get("mode") in MODES else "ask"
             self.model = data.get("model", "default") if data.get("model") in MODELS else "default"
+            self.effort = data.get("effort") if data.get("effort") in EFFORTS else "default"
             self.theme = data.get("theme") if data.get("theme") in THEMES else "claude"
             self.voice = data.get("voice") if data.get("voice") in VOICES else "voice"
             self.ptt = data.get("ptt") if deck_tools.valid_chord(data.get("ptt")) else "l4r4"
@@ -315,7 +318,7 @@ class Plugin:
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"session_id": self.session_id, "history": self.history, "usage": self.usage,
-                       "mode": self.mode, "model": self.model, "theme": self.theme,
+                       "mode": self.mode, "model": self.model, "effort": self.effort, "theme": self.theme,
                        "voice": self.voice, "ptt": self.ptt,
                        "dictate": self.dictate, "chats": self.chats, "chat_meta": self.chat_meta,
                        "game_threads": self.game_threads}, f)
@@ -336,7 +339,7 @@ class Plugin:
     # --- frontend API ----------------------------------------------------------
     async def get_state(self):
         return {"history": self.history, "running": self.running, "asks": list(self.asks.values()),
-                "usage": self.usage, "mode": self.mode, "model": self.model, "theme": self.theme,
+                "usage": self.usage, "mode": self.mode, "model": self.model, "effort": self.effort, "theme": self.theme,
                 "voice": self.voice, "can_speak": self.speaker.available(), "speaking": self.speaker.active,
                 "ptt": self.ptt, "dictate": self.dictate, "game_threads": self.game_threads,
                 "chat_title": self.chat_meta.get("title"), "chat_game": self.chat_meta.get("game"),
@@ -446,6 +449,21 @@ class Plugin:
                 await decky.emit("claude_model", self.model)
                 return False
         self.model = model
+        self._save()
+        return True
+
+    async def set_effort(self, effort):
+        if effort not in EFFORTS:
+            return False
+        if self._alive():
+            try:
+                await self._control({"subtype": "apply_flag_settings",
+                                     "settings": {"effortLevel": None if effort == "default" else effort}})
+            except Exception as e:
+                decky.logger.warning("set_effort failed: %s", e)
+                await decky.emit("claude_effort", self.effort)
+                return False
+        self.effort = effort
         self._save()
         return True
 
@@ -1007,6 +1025,8 @@ class Plugin:
                 "--name", DEVICE_NAME]
         if self.model != "default":
             args += ["--model", self.model]
+        if self.effort != "default":
+            args += ["--effort", self.effort]
         if self.session_id:
             args += ["--resume", self.session_id]
         self.stopping = False
