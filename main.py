@@ -378,10 +378,6 @@ class Plugin:
         self.ptt_shot = None
         self.remote_url = None
         self.recorder = deck_tools.Recorder()
-        # TEMP speech bench: transient state, retained when the panel is reopened.
-        self.bench_task = None
-        self.bench_state = {"phase": "idle", "results": []}
-        self.bench_mic_starting = False
         self._load()
         self.chords = deck_tools.ChordWatcher(self._ptt_down, self._ptt_up, decky.logger.info)
         self._bind_chords()
@@ -394,13 +390,6 @@ class Plugin:
         await self._refresh_usage()
 
     async def _unload(self):
-        # TEMP speech bench: cancellation also kills the current model subprocess.
-        if self.bench_task and not self.bench_task.done():
-            self.bench_task.cancel()
-            try:
-                await self.bench_task
-            except asyncio.CancelledError:
-                pass
         if self.usage_expiry:
             self.usage_expiry.cancel()
         await self.chords.stop()
@@ -900,9 +889,6 @@ class Plugin:
 
     # --- hold-to-talk from anywhere ------------------------------------------------
     async def _ptt_down(self, role="ask"):
-        # TEMP speech bench: reserve the shared recorder and CPU during comparison.
-        if self._bench_busy():
-            return
         if role == "ask" and (self.caption_up or self.speaker.active) and not self.ptt_t0:
             # Pressing again while an answer is up dismisses it; press once more to ask again.
             await self.stop_speaking()
@@ -1025,24 +1011,15 @@ class Plugin:
         return os.path.exists(deck_tools.WHISPER_BIN) and os.path.exists(deck_tools.WHISPER_MODEL)
 
     async def mic_start(self):
-        # TEMP speech bench
-        if self._bench_busy():
-            return {"error": "Speech benchmark is using the microphone"}
-        self.bench_mic_starting = True
+        await self.stop_speaking()  # don't talk over the user
         try:
-            await self.stop_speaking()  # don't talk over the user
             await self.recorder.start()
             return {"ok": True}
         except Exception as e:
             return {"error": str(e)}
-        finally:
-            self.bench_mic_starting = False  # TEMP speech bench
 
     async def mic_stop(self):
         """Stop recording and return {text} or {error}."""
-        # TEMP speech bench
-        if self._bench_busy():
-            return {"error": "Use Stop and compare to finish the speech benchmark"}
         try:
             return {"text": await self.recorder.stop()}
         except Exception as e:
@@ -1050,66 +1027,8 @@ class Plugin:
             return {"error": str(e)}
 
     async def mic_cancel(self):
-        # TEMP speech bench
-        if self._bench_busy():
-            return False
         await self.recorder.cancel()
         return True
-
-    # TEMP speech bench: remove this block and the guarded recorder hooks after choosing a model.
-    def _bench_busy(self):
-        return getattr(self, "bench_state", {}).get("phase") in ("recording", "running")
-
-    async def _bench_emit(self, **event):
-        self.bench_state = {**self.bench_state, **event}
-        await decky.emit("claude_bench", self.bench_state)
-
-    async def bench_last(self):
-        return self.bench_state
-
-    async def bench_start(self):
-        if (self._bench_busy() or self.recorder.active or self.ptt_t0
-                or getattr(self, "bench_mic_starting", False)):
-            return {"error": "Recorder or speech benchmark is busy"}
-        # Reserve before the first await, including recorder startup.
-        self.bench_state = {**self.bench_state, "phase": "recording", "message": ""}
-        try:
-            await self.stop_speaking()
-            await self.recorder.start()
-            await self._bench_emit(phase="recording")
-            return {"ok": True}
-        except Exception as e:
-            await self._bench_emit(phase="error", message=str(e))
-            return {"error": str(e)}
-
-    async def bench_stop(self):
-        if self.bench_state["phase"] != "recording":
-            return {"error": "Speech benchmark is not recording"}
-        self.bench_state = {**self.bench_state, "phase": "running", "index": 0,
-                            "total": 0, "model": "Preparing"}
-        try:
-            if not await self.recorder.cancel():
-                raise RuntimeError("The microphone stopped before recording finished")
-            await self._bench_emit(phase="running")
-            self.bench_task = asyncio.create_task(self._run_speech_bench())
-            return {"ok": True}
-        except Exception as e:
-            await self._bench_emit(phase="error", message=str(e))
-            return {"error": str(e)}
-
-    async def _run_speech_bench(self):
-        async def progress(index, total, model):
-            await self._bench_emit(phase="running", index=index, total=total, model=model)
-
-        try:
-            import wave
-            with wave.open(self.recorder.path, "rb") as w:
-                secs = w.getnframes() / w.getframerate()
-            results = await deck_tools.speech_bench(self.recorder.path, progress)
-            await self._bench_emit(phase="done", results=results, clip_seconds=round(secs, 1))
-        except Exception as e:
-            await self._bench_emit(phase="error", message=str(e))
-    # TEMP speech bench end.
 
     async def stop(self):
         """Interrupt the current reply. Claude keeps what it said so far."""
