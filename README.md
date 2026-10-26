@@ -105,7 +105,7 @@ Claude has real tools on your Deck, not just a chat window:
 | "Sign me in to Heroic" | Show a QR code and code right in the chat; passwords go to a private file Claude never reads |
 | "What should I play tonight?" | Look through your library and playtime, and pick something |
 
-Every message quietly includes the running game, battery and performance settings, so "this game"
+Ordinary messages quietly include the running game, battery and performance settings, so "this game"
 just works. Claude also keeps a short **notes file per game** (where you're stuck, which mods and
 settings worked) and reads it the next time you ask about that game.
 
@@ -158,6 +158,9 @@ a 7-inch screen; long ones scroll a paragraph at a time with the d-pad.
 - **Plan usage:** your 5-hour and weekly limits, with reset times.
 - **Model picker:** Default, Fable, Opus, Sonnet or Haiku, switched mid-conversation.
 - **Effort picker:** Default, Low, Medium, High, Extra high or Max, applied to the next reply on supported models.
+- **Skills:** pick an installed skill or slash command beside the message box, add any arguments,
+  then send. The list appears after Claude starts and follows the commands it reports. Slash commands
+  are sent as typed, without added game context.
 
 ## Themes
 
