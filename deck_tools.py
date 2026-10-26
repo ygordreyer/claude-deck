@@ -18,6 +18,22 @@ PIPER_DIR = os.path.join(HOME, ".local/share/claude-deck/piper")
 PIPER_BIN = os.path.join(PIPER_DIR, "piper")
 PIPER_VOICE = os.path.join(PIPER_DIR, "en_US-lessac-medium.onnx")
 KEEP_SHOTS = 10
+DEVICE_NAMES = {
+    "product_name": {
+        "83E1": "Legion Go",
+        "83N0": "Legion Go 2",
+        "83N1": "Legion Go 2",
+        "83L3": "Legion Go S",
+        "83N6": "Legion Go S",
+        "83Q2": "Legion Go S",
+        "83Q3": "Legion Go S",
+    },
+    "board_name": {
+        "RC71L": "ROG Ally",
+        "RC72LA": "ROG Ally X",
+        "MS-1T41": "MSI Claw",
+    },
+}
 
 
 def device_name(dmi="/sys/class/dmi/id"):
@@ -30,6 +46,9 @@ def device_name(dmi="/sys/class/dmi/id"):
             pass
     if any(info.get(key, "").lower() in ("jupiter", "galileo") for key in ("product_name", "board_name")):
         return "Steam Deck"
+    for key, names in DEVICE_NAMES.items():
+        if info.get(key) in names:
+            return names[info[key]]
     keys = ("product_family", "product_name") if info.get("sys_vendor", "").upper() == "LENOVO" else ("product_name", "product_family")
     for key in keys:
         name = info.get(key, "")

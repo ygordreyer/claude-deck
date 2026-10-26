@@ -69,10 +69,39 @@ class DeviceTests(unittest.TestCase):
         for key, value in {"sys_vendor": "LENOVO", "product_name": "83N1",
                            "product_family": "Legion Go 8AHP2", "board_name": "LNVNB161216"}.items():
             (self.root / key).write_text(value + "\n")
-        self.assertEqual(device_name(self.root), "Legion Go 8AHP2")
+        self.assertEqual(device_name(self.root), "Legion Go 2")
         for board in ("Jupiter", "Galileo"):
             (self.root / "board_name").write_text(board)
             self.assertEqual(device_name(self.root), "Steam Deck")
+
+    def test_known_devices(self):
+        for key, value, expected in (
+            ("product_name", "83E1", "Legion Go"),
+            ("product_name", "83N0", "Legion Go 2"),
+            ("product_name", "83N1", "Legion Go 2"),
+            ("product_name", "83L3", "Legion Go S"),
+            ("product_name", "83N6", "Legion Go S"),
+            ("product_name", "83Q2", "Legion Go S"),
+            ("product_name", "83Q3", "Legion Go S"),
+            ("board_name", "RC71L", "ROG Ally"),
+            ("board_name", "RC72LA", "ROG Ally X"),
+            ("board_name", "MS-1T41", "MSI Claw"),
+        ):
+            with self.subTest(value=value):
+                (self.root / "product_name").write_text("Unknown model")
+                (self.root / "product_family").write_text("Unknown family")
+                (self.root / "board_name").write_text("Unknown board")
+                (self.root / key).write_text(value + "\n")
+                self.assertEqual(device_name(self.root), expected)
+
+    def test_unknown_device(self):
+        (self.root / "product_name").write_text("Future handheld")
+        (self.root / "product_family").write_text("Future family")
+        self.assertEqual(device_name(self.root), "Future handheld")
+        (self.root / "sys_vendor").write_text("LENOVO")
+        self.assertEqual(device_name(self.root), "Future family")
+        (self.root / "product_family").write_text("Default string")
+        self.assertEqual(device_name(self.root), "Future handheld")
 
 
 if __name__ == "__main__":
