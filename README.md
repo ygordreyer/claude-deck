@@ -155,7 +155,8 @@ a 7-inch screen; long ones scroll a paragraph at a time with the d-pad.
 - **Chats:** reopen or delete past conversations. With *A chat per game* on, each game gets its own
   thread, so Claude picks up where you left off.
 - **Continue on phone:** a QR code opens the same live session in the Claude app.
-- **Plan usage:** your 5-hour and weekly limits, with reset times.
+- **Plan usage:** your 5-hour and weekly limits, with reset times. For subscription accounts, usage
+  refreshes on plugin load and when you open the panel, at most once a minute. Expired windows are hidden.
 - **Model picker:** Default, Fable, Opus, Sonnet or Haiku, switched mid-conversation.
 
 ## Themes

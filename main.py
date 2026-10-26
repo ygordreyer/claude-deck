@@ -1,11 +1,14 @@
 import asyncio
 import base64
 import json
+import math
 import os
 import re
 import sys
 import time
 import uuid
+import urllib.request
+from datetime import datetime
 
 import decky
 
@@ -194,6 +197,76 @@ def _ssl():
     return ssl.create_default_context()
 
 
+def _current_usage(usage, now=None):
+    if not isinstance(usage, dict):
+        return None
+    now = time.time() if now is None else now
+    windows = usage.get("unifiedWindows") or {}
+    current = {k: w for k, w in windows.items() if isinstance(w, dict)
+               and isinstance(w.get("resetsAt"), (int, float))
+               and math.isfinite(w["resetsAt"]) and w["resetsAt"] > now}
+    result = {k: v for k, v in usage.items() if k != "unifiedWindows"}
+    if current:
+        result["unifiedWindows"] = current
+    if current != windows or not current:
+        result.pop("status", None)
+    return result
+
+
+def _merge_usage(usage, data):
+    result = dict(usage or {})
+    windows = dict(result.get("unifiedWindows") or {})
+    for key in ("five_hour", "seven_day"):
+        if key not in data:
+            continue
+        bucket = data[key]
+        if bucket is None:
+            windows.pop(key, None)
+            continue
+        if not isinstance(bucket, dict):
+            continue
+        percent, reset = bucket.get("utilization"), bucket.get("resets_at")
+        if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not math.isfinite(percent):
+            continue
+        try:
+            reset = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+            if reset.tzinfo is None:
+                continue
+            windows[key] = {"utilization": max(0, min(100, percent)) / 100, "resetsAt": reset.timestamp()}
+        except (AttributeError, ValueError, OverflowError, OSError):
+            continue
+        result.pop("status", None)
+    result["unifiedWindows"] = windows
+    return _current_usage(result)
+
+
+class _NoUsageRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # Keep the bearer header on the usage endpoint.
+
+
+def _fetch_usage():
+    try:
+        with open(os.path.join(HOME, ".claude/.credentials.json")) as f:
+            oauth = json.load(f).get("claudeAiOauth") or {}
+        token, expires = oauth.get("accessToken"), oauth.get("expiresAt")
+        if (not isinstance(token, str) or not token or isinstance(expires, bool)
+                or not isinstance(expires, (int, float)) or not math.isfinite(expires) or expires <= time.time() * 1000):
+            return None
+        req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
+            "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.1"})
+        opener = urllib.request.build_opener(_NoUsageRedirect, urllib.request.HTTPSHandler(context=_ssl()))
+        with opener.open(req, timeout=10) as response:
+            data = json.load(response)
+        return data if isinstance(data, dict) else None
+    except urllib.error.HTTPError as error:
+        error.close()
+        return None
+    except Exception:
+        return None  # Request errors can contain credentials; keep them out of logs and events.
+
+
 def deck_policy(inp):
     """PreToolUse hook: hard denies and forced approval cards. {} means no opinion."""
     tool = inp.get("tool_name", "")
@@ -251,6 +324,9 @@ class Plugin:
         self.session_id = None
         self.history = []
         self.usage = None
+        self.usage_checked_at = None
+        self.usage_lock = asyncio.Lock()
+        self.usage_expiry = None
         self.info = {}
         self.mode = "ask"
         self.model = "default"
@@ -283,8 +359,12 @@ class Plugin:
             json.dump({"mcpServers": {"steam": {
                 "command": "/usr/bin/python3", "args": [STEAM_MCP]}}}, f)
         decky.logger.info("Claude plugin loaded (session %s)", self.session_id)
+        await self._set_usage(self.usage)
+        await self._refresh_usage()
 
     async def _unload(self):
+        if self.usage_expiry:
+            self.usage_expiry.cancel()
         await self.chords.stop()
         await self.recorder.cancel()
         await self.speaker.stop()
@@ -334,6 +414,7 @@ class Plugin:
 
     # --- frontend API ----------------------------------------------------------
     async def get_state(self):
+        await self._refresh_usage()
         return {"history": self.history, "running": self.running, "asks": list(self.asks.values()),
                 "usage": self.usage, "mode": self.mode, "model": self.model, "theme": self.theme,
                 "voice": self.voice, "can_speak": self.speaker.available(), "speaking": self.speaker.active,
@@ -341,6 +422,31 @@ class Plugin:
                 "chat_title": self.chat_meta.get("title"), "chat_game": self.chat_meta.get("game"),
                 "ptt_label": deck_tools.chord_label(self.ptt), "dictate_label": deck_tools.chord_label(self.dictate),
                 "remote_url": self.remote_url, "account": self.info.get("account")}
+
+    async def _set_usage(self, usage):
+        self.usage = _current_usage(usage)
+        if self.usage_expiry and self.usage_expiry is not asyncio.current_task():
+            self.usage_expiry.cancel()
+        windows = (self.usage or {}).get("unifiedWindows", {})
+        reset = min((w["resetsAt"] for w in windows.values()), default=None)
+        self.usage_expiry = asyncio.create_task(self._expire_usage(reset)) if reset is not None else None
+        self._save()
+        await decky.emit("claude_usage", self.usage)
+
+    async def _expire_usage(self, reset):
+        await asyncio.sleep(max(0, reset - time.time()))
+        await self._set_usage(self.usage)
+
+    async def _refresh_usage(self):
+        async with self.usage_lock:
+            now = time.monotonic()
+            if self.usage_checked_at is not None and now - self.usage_checked_at < 60:
+                return
+            self.usage_checked_at = now
+            previous = self.usage
+            data = await asyncio.to_thread(_fetch_usage)
+            if data is not None and self.usage is previous:
+                await self._set_usage(_merge_usage(self.usage, data))
 
     async def send(self, prompt, context=None, screenshot=None, spoken=False):
         """Post a message. If Claude is busy it is answered next, like a chat.
@@ -1112,9 +1218,7 @@ class Plugin:
             if self.asks.pop(rid, None):  # answered elsewhere (e.g. on the phone)
                 await decky.emit("claude_ask_done", rid)
         elif t == "rate_limit_event":
-            self.usage = ev.get("rate_limit_info")
-            self._save()
-            await decky.emit("claude_usage", self.usage)
+            await self._set_usage(ev.get("rate_limit_info"))
         else:
             await self._handle(ev)
 
