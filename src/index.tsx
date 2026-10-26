@@ -9,6 +9,7 @@ import {
 import {
   DialogButton,
   DropdownItem,
+  ErrorBoundary,
   Focusable,
   Menu,
   MenuItem,
@@ -17,6 +18,7 @@ import {
   ToggleField,
   PanelSection,
   PanelSectionRow,
+  Patch,
   QuickAccessTab,
   Router,
   TextField,
@@ -28,8 +30,9 @@ import {
   showContextMenu,
   showModal,
   staticClasses,
+  useQuickAccessVisible,
 } from "@decky/ui";
-import { CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { CSSProperties, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Ask, AskCard, ghostBtn, primaryBtn } from "./asks";
 import { Icon, IconName, toolIcon } from "./icons";
 import { Markdown } from "./markdown";
@@ -221,12 +224,11 @@ function applyState(s: State) {
   remoteUrl = s.remote_url ?? null;
 }
 
-function useStore() {
+function useStore(visible = true) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const f = () => setTick((t) => t + 1);
     subscribers.add(f);
-    viewers++;
     getState().then((s) => {
       applyState(s);
       notify();
@@ -241,9 +243,13 @@ function useStore() {
     }).catch(() => {});
     return () => {
       subscribers.delete(f);
-      viewers--;
     };
   }, []);
+  useEffect(() => {
+    if (!visible) return;
+    viewers++;
+    return () => { viewers--; };
+  }, [visible]);
 }
 
 const lastAssistant = () => [...history].reverse().find((e) => e.kind === "assistant");
@@ -333,8 +339,12 @@ async function submit(text: string, spoken = false) {
   await send(text, deckContext(), s, spoken);
 }
 
-/** Reopen the Quick Access menu on Decky's tab, where this plugin stays the active panel. */
+/** Reopen the installed Claude tab, with normal Decky access as fallback. */
 function reopenPanel() {
+  if (claudeQamReady) {
+    Navigation.OpenQuickAccessMenu(CLAUDE_QAM_TAB as QuickAccessTab);
+    return;
+  }
   Navigation.OpenQuickAccessMenu(QuickAccessTab.Decky);
   try {
     (window as any).DeckyPluginLoader?.deckyState?.setActivePlugin("Claude");
@@ -640,9 +650,9 @@ function menu<T extends string>(label: string, items: { id: T; label: string }[]
 
 // --- building blocks ---------------------------------------------------------------------------
 
-function Root({ children, style }: { children: any; style?: CSSProperties }) {
+function Root({ children, style, innerRef }: { children: any; style?: CSSProperties; innerRef?: RefObject<HTMLDivElement> }) {
   return (
-    <div className="cd-root" style={{ ...(themeVars(themeById(theme)) as CSSProperties), ...style }}>
+    <div ref={innerRef} className="cd-root" style={{ ...(themeVars(themeById(theme)) as CSSProperties), ...style }}>
       <style>{CSS}</style>
       {children}
     </div>
@@ -1319,7 +1329,7 @@ function OverGame() {
 }
 
 function Caption() {
-  useStore();
+  useStore(ptt !== "idle");
   useEffect(pttTick);
   if (ptt === "idle") return null;
   const answer = ptt === "answer" ? pttAnswer() : "";
@@ -1413,7 +1423,7 @@ function askAboutGame(appid: number, name: string, prompt: string) {
 }
 
 function AskOnGamePage({ overview }: { overview: any }) {
-  useStore();
+  useStore(false);
   const name = overview?.display_name ?? "this game";
   const appid = overview?.appid;
   const open = (e: any) =>
@@ -1694,9 +1704,10 @@ function ChordSetting({ role }: { role: "ask" | "dictate" }) {
 }
 
 /** Background jobs Claude scheduled (transient systemd user units named claude-*). */
-function Jobs() {
+function Jobs({ visible }: { visible: boolean }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   useEffect(() => {
+    if (!visible) return;
     let alive = true;
     const load = () => listJobs().then((j) => alive && setJobs(j)).catch(() => {});
     load();
@@ -1705,7 +1716,7 @@ function Jobs() {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [visible]);
   const shown = jobs.filter((j) => j.unit.endsWith(".timer") || j.state === "active");
   if (!shown.length) return null;
   return (
@@ -1782,8 +1793,37 @@ function SpeechBench() {
 }
 // TEMP speech bench end.
 
-function Panel() {
-  useStore();
+function usePanelVisible(root: RefObject<HTMLDivElement>, tab: number): boolean {
+  const menuVisible = useQuickAccessVisible();
+  const [panelVisible, setPanelVisible] = useState(false);
+  useEffect(() => {
+    const element = root.current;
+    if (!element) return;
+    const doc = element.ownerDocument;
+    const view = doc.defaultView;
+    let intersecting = false;
+    const update = () => setPanelVisible(intersecting &&
+      doc.getElementById(`quickaccess_tab_${tab}`)?.getAttribute("aria-selected") === "true");
+    // Decky keeps inactive plugin panels mounted. Intersection also excludes its hidden fallback.
+    const intersection = new (view?.IntersectionObserver ?? IntersectionObserver)(([entry]) => {
+      intersecting = entry.isIntersecting;
+      update();
+    });
+    const selection = new (view?.MutationObserver ?? MutationObserver)(update);
+    intersection.observe(element);
+    selection.observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-selected"] });
+    return () => {
+      intersection.disconnect();
+      selection.disconnect();
+    };
+  }, [root, tab]);
+  return menuVisible && panelVisible;
+}
+
+function Panel({ topLevel = false }: { topLevel?: boolean }) {
+  const root = useRef<HTMLDivElement>(null);
+  const visible = usePanelVisible(root, topLevel ? CLAUDE_QAM_TAB : QuickAccessTab.Decky);
+  useStore(visible);
   const app = Router.MainRunningApp;
   const turns = toTurns(history);
   const lastTurn = turns[turns.length - 1];
@@ -1795,7 +1835,7 @@ function Panel() {
   const wide = { width: "100%", boxSizing: "border-box" as const };
 
   return (
-    <Root>
+    <Root innerRef={root}>
       <PanelSection>
         <Stack gap={14} style={{ padding: "4px 0 8px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -1892,7 +1932,7 @@ function Panel() {
         </Stack>
       </PanelSection>
 
-      <Jobs />
+      <Jobs visible={visible} />
 
       <PanelSection title="Settings">
         {/* TEMP speech bench */}
@@ -2012,6 +2052,105 @@ function TabIcon() {
   );
 }
 
+// Private: top-level Claude tab
+type QamTab = {
+  key: number | string;
+  title?: any;
+  tab?: any;
+  panel?: any;
+  decky?: boolean;
+};
+type QamArrayRef = { deref(): QamTab[] | undefined };
+const CLAUDE_QAM_TAB = 0x434c4155;
+let claudeQamReady = false;
+
+function installClaudeQam(): () => void {
+  let active = true;
+  let patch: Patch | undefined;
+  let changed: { ref: QamArrayRef; music?: QamTab; index: number }[] = [];
+  const Ref = (globalThis as any).WeakRef as (new (tabs: QamTab[]) => QamArrayRef) | undefined;
+  const own: QamTab = {
+    key: CLAUDE_QAM_TAB,
+    title: <div className={staticClasses.Title}>Claude</div>,
+    tab: <TabIcon />,
+    panel: <ErrorBoundary><Panel topLevel /></ErrorBoundary>,
+  };
+  const isMusic = (t: QamTab) => !t?.decky && String(t?.key) === String(QuickAccessTab.Music);
+  const warned = new Set<string>();
+  const warn = (message: string, error?: unknown) => {
+    if (warned.has(message)) return;
+    warned.add(message);
+    console.warn(`Claude: ${message}; keeping normal Decky access`, error);
+  };
+  const cleanup = () => {
+    active = false;
+    claudeQamReady = false;
+    try {
+      if (patch && !patch.hasUnpatched) patch.unpatch();
+    } catch (e) {
+      warn("QAM unpatch failed", e);
+    }
+    for (const r of changed) {
+      const tabs = r.ref.deref();
+      if (!tabs) continue;
+      try {
+        const i = tabs.indexOf(own);
+        if (r.music && !tabs.some(isMusic)) {
+          if (i >= 0) tabs[i] = r.music;
+          else tabs.splice(Math.min(r.index, tabs.length), 0, r.music);
+        } else if (i >= 0) tabs.splice(i, 1);
+      } catch (e) {
+        warn("QAM restore failed", e);
+      }
+    }
+    changed = [];
+  };
+  try {
+    const hook = (window as any).__TABS_HOOK_INSTANCE;
+    if (!Ref || typeof hook?.render !== "function" || !Array.isArray(hook.tabs) ||
+        !hook.tabs.some((t: any) => t?.id === QuickAccessTab.Decky)) {
+      warn("top-level tab unavailable");
+      return cleanup;
+    }
+    patch = afterPatch(hook, "render", ([tabs, visible], ret) => {
+      if (!active || !Array.isArray(tabs)) return ret;
+      try {
+        if (Object.isFrozen(tabs) || Object.isSealed(tabs)) {
+          warn("QAM tabs are immutable");
+          return ret;
+        }
+        if (visible && document.getElementById(`quickaccess_tab_${QuickAccessTab.Music}`)
+          ?.getAttribute("aria-selected") === "true") return ret;
+        if (tabs.includes(own)) return ret;
+        if (tabs.some(t => String(t?.key) === String(CLAUDE_QAM_TAB))) {
+          warn("QAM tab key collision");
+          return ret;
+        }
+        const i = tabs.findIndex(isMusic);
+        changed = changed.filter(r => r.ref.deref());
+        let r = changed.find(r => r.ref.deref() === tabs);
+        if (!r) {
+          r = { ref: new Ref(tabs), index: i >= 0 ? i : tabs.length };
+          changed.push(r);
+        }
+        if (i >= 0) {
+          r.music = tabs[i];
+          r.index = i;
+          tabs[i] = own;
+        } else tabs.push(own);
+        claudeQamReady = true;
+      } catch (e) {
+        warn("top-level tab render failed", e);
+      }
+      return ret;
+    });
+  } catch (e) {
+    warn("top-level tab unavailable", e);
+    cleanup();
+  }
+  return cleanup;
+}
+
 export default definePlugin(() => {
   const listeners = handlers.map(([n, f]) => [n, addEventListener(n, f)] as const);
   routerHook.addRoute(CHAT_ROUTE, ChatPage, { exact: true });
@@ -2019,6 +2158,7 @@ export default definePlugin(() => {
   const removeFonts = installFonts();
   const removeSignIn = installSignInBridge(notify, () => viewers > 0, openChatFromToast);
   const removeSteamHooks = registerSteamHooks();
+  const removeQam = installClaudeQam();
   // Automation hooks for scripts/deckctl.py (README captures and demos); same actions as the buttons.
   (window as any).__claudeDeck.ui = {
     talk: () => toggleMic(),
@@ -2054,6 +2194,7 @@ export default definePlugin(() => {
     icon: <TabIcon />,
     alwaysRender: true,
     onDismount() {
+      removeQam();
       listeners.forEach(([n, l]) => removeEventListener(n, l as any));
       routerHook.removeRoute(CHAT_ROUTE);
       routerHook.removeGlobalComponent("ClaudeCaption");
