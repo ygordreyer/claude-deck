@@ -13,6 +13,7 @@ sys.path.insert(0, decky.DECKY_PLUGIN_DIR)
 import deck_tools  # noqa: E402
 
 HOME = decky.DECKY_USER_HOME
+DEVICE_NAME = deck_tools.device_name()
 CLAUDE = os.path.join(HOME, ".local/bin/claude")
 STATE_FILE = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "state.json")
 CHATS_DIR = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "chats")  # history of past chats, one file each
@@ -63,11 +64,11 @@ DENY_BASH = [
 ASK_BASH = re.compile(r"(^|[\s;&|(])(rm|rmdir|shred|systemctl|reboot|poweroff|shutdown|kill|pkill|killall)\b"
                       r"|flatpak\s+(uninstall|remove)|steamos-update|>\s*~?/?\S*\.(vdf|acf)\b")
 
-SYSTEM_PROMPT = """You are running inside the "Claude" Decky Loader plugin on the user's Steam Deck, \
+SYSTEM_PROMPT = f"""You are running inside the "Claude" Decky Loader plugin on the user's {DEVICE_NAME}, \
 usually in Game Mode. It is a chat app: the user talks to you like a chatbot, in a chat window or \
 the narrow Quick Access Menu, typing with a controller and on-screen keyboard. So:
 - Be conversational and friendly. Happily chat about anything (games, questions, ideas), not \
-only Deck tasks. Ask a short follow-up question when it helps.
+only device tasks. Ask a short follow-up question when it helps.
 - Keep replies short and plain: short paragraphs, simple bullet lists and **bold** are fine; \
 no tables, no wide code blocks.
 - When you need the user to choose, use the AskUserQuestion tool with 2-4 short options: \
@@ -105,9 +106,9 @@ stuck or headed, mods and settings that worked, preferences). Keep it under ~40 
 - Work that should happen later or keep going after this chat (overnight save backups, waiting \
 for a download, a reminder) goes in a transient systemd user unit named `claude-<short-name>`: \
 `systemd-run --user --unit=claude-x --on-calendar=... ` or `--on-active=...`, wrap long work in \
-`systemd-inhibit --what=sleep --why="Claude: ..."` so the Deck stays awake only while it runs, \
+`systemd-inhibit --what=sleep --why="Claude: ..."` so the device stays awake only while it runs, \
 and finish with `notify-send "Claude" "<result>"` so the user sees it. The plugin lists these \
-under Jobs. Timers only fire while the Deck is awake."""
+under Jobs. Timers only fire while the device is awake."""
 
 
 # Claude Code's ways of saying the login is gone (expired OAuth, logged out, bad key).
@@ -340,7 +341,7 @@ class Plugin:
                 "ptt": self.ptt, "dictate": self.dictate, "game_threads": self.game_threads,
                 "chat_title": self.chat_meta.get("title"), "chat_game": self.chat_meta.get("game"),
                 "ptt_label": deck_tools.chord_label(self.ptt), "dictate_label": deck_tools.chord_label(self.dictate),
-                "remote_url": self.remote_url, "account": self.info.get("account")}
+                "remote_url": self.remote_url, "account": self.info.get("account"), "device_name": DEVICE_NAME}
 
     async def send(self, prompt, context=None, screenshot=None, spoken=False):
         """Post a message. If Claude is busy it is answered next, like a chat.
@@ -406,7 +407,7 @@ class Plugin:
                 if rules:
                     resp["updatedPermissions"] = [dict(rules[0], destination="session")]
         else:
-            resp = {"behavior": "deny", "message": "The user tapped Deny on the Deck.", "interrupt": False}
+            resp = {"behavior": "deny", "message": "The user tapped Deny on the device.", "interrupt": False}
         self._respond(rid, resp)
         if card["kind"] == "plan" and decision != "deny":
             self.mode = "edits" if decision == "always" else "ask"
@@ -1003,7 +1004,7 @@ class Plugin:
                 "--settings", json.dumps({"permissions": {"allow": SAFE_TOOLS, "deny": DENY_TOOLS}}),
                 "--mcp-config", MCP_CONFIG, "--strict-mcp-config",
                 "--system-prompt-snapshot", "off", "--append-system-prompt", SYSTEM_PROMPT,
-                "--name", "Steam Deck"]
+                "--name", DEVICE_NAME]
         if self.model != "default":
             args += ["--model", self.model]
         if self.session_id:

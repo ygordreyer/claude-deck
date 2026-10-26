@@ -85,7 +85,7 @@ TOOLS = {
         "js": None,
     },
     "screenshot": {
-        "description": "Capture what's on the Deck's screen right now (the game, after closing the Quick Access Menu) "
+        "description": "Capture what's on the device's screen right now (the game, after closing the Quick Access Menu) "
                        "and return the PNG path. Then Read the file to see it.",
         "schema": {},
         "js": None,

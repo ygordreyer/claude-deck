@@ -190,6 +190,9 @@ Settings › Theme. It applies instantly everywhere: panel, chat, cards and the 
 
 When a new version is released, an **Update** button appears in Settings.
 
+**Other handhelds:** Legion Go 2 on SteamOS works through InputPlumber's Deck emulation.
+Back buttons use the emulated Deck button names (L4/R4/L5/R5).
+
 > The official Decky store doesn't list AI plugins, so releases live here on GitHub.
 
 <details>

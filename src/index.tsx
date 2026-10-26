@@ -61,6 +61,7 @@ type Mode = "ask" | "edits" | "plan" | "auto" | "trust";
 type Model = "default" | "opus" | "fable" | "sonnet" | "haiku";
 
 interface State {
+  device_name: string;
   history: Entry[];
   running: boolean;
   asks: Ask[];
@@ -132,6 +133,7 @@ const PRESETS: { icon: IconName; text: string }[] = [
 // Module-level so events keep arriving while no view is open.
 
 let history: Entry[] = [];
+let deviceName = "Steam Deck";
 let running = false;
 let streaming = ""; // the reply Claude is typing right now
 let asks: Ask[] = [];
@@ -161,6 +163,7 @@ const subscribers = new Set<() => void>();
 const notify = () => subscribers.forEach((f) => f());
 
 function applyState(s: State) {
+  deviceName = s.device_name ?? "Steam Deck";
   history = s.history;
   running = s.running;
   asks = s.asks ?? [];
@@ -1259,10 +1262,10 @@ function Caption() {
 // --- Steam integration: game pages, game sessions, screenshots ---------------------------------
 
 const GAME_PROMPTS: { icon: IconName; label: string; prompt: (name: string) => string }[] = [
-  { icon: "gauge", label: "Make it run better", prompt: (n) => `Make ${n} run as well as it can on this Deck: performance settings, Proton version and launch options. Check what's known about it first.` },
+  { icon: "gauge", label: "Make it run better", prompt: (n) => `Make ${n} run as well as it can on this ${deviceName}: performance settings, Proton version and launch options. Check what's known about it first.` },
   { icon: "alert", label: "Fix a problem", prompt: (n) => `${n} isn't working right. Ask me what's happening, then find out why and fix it.` },
-  { icon: "layers", label: "Mods and tweaks", prompt: (n) => `What are the best mods or tweaks for ${n} on the Steam Deck? Offer to set them up.` },
-  { icon: "question", label: "Is it worth playing?", prompt: (n) => `Should I play ${n}? Tell me what it's like, how long it is and how it runs on the Deck, in a few sentences.` },
+  { icon: "layers", label: "Mods and tweaks", prompt: (n) => `What are the best mods or tweaks for ${n} on the ${deviceName}? Offer to set them up.` },
+  { icon: "question", label: "Is it worth playing?", prompt: (n) => `Should I play ${n}? Tell me what it's like, how long it is and how it runs on the ${deviceName}, in a few sentences.` },
 ];
 
 function askAboutGame(appid: number, name: string, prompt: string) {
@@ -1748,6 +1751,11 @@ function Panel() {
             <ChordSetting role="dictate" />
           </PanelSectionRow>
         )}
+        {hasVoice && deviceName !== "Steam Deck" && (
+          <div style={{ fontSize: "12px", color: v("dim"), paddingBottom: "10px" }}>
+            Back buttons map to Deck button names through InputPlumber.
+          </div>
+        )}
         <PanelSectionRow>
           <ToggleField
             label="A chat per game"
@@ -1795,7 +1803,7 @@ function Panel() {
               {usage.status === "rejected" && <div style={{ fontSize: "12px", color: v("err") }}>Limit reached. Claude is back after the reset.</div>}
             </div>
           )}
-          {pluginVersion() && <div style={{ fontSize: "11px", color: v("faint"), textAlign: "center" }}>Claude for Steam Deck v{pluginVersion()} · unofficial</div>}
+          {pluginVersion() && <div style={{ fontSize: "11px", color: v("faint"), textAlign: "center" }}>Claude for {deviceName} v{pluginVersion()} · unofficial</div>}
         </Stack>
       </PanelSection>
     </Root>
