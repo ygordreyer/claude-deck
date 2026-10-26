@@ -1008,7 +1008,7 @@ class Plugin:
         return deck_tools.battery()
 
     async def voice_available(self):
-        return os.path.exists(deck_tools.WHISPER_BIN) and os.path.exists(deck_tools.WHISPER_MODEL)
+        return deck_tools.voice_input_available()
 
     async def mic_start(self):
         await self.stop_speaking()  # don't talk over the user

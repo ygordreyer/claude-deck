@@ -22,7 +22,7 @@ jobs:
       - name: Package for Decky
         run: |
           mkdir -p out/claude-deck/dist
-          cp plugin.json package.json main.py steam_mcp.py deck_tools.py LICENSE README.md out/claude-deck/
+          cp plugin.json package.json main.py steam_mcp.py deck_tools.py fw_transcribe.py LICENSE README.md out/claude-deck/
           cp dist/index.js out/claude-deck/dist/
           cd out && zip -r claude-deck.zip claude-deck
       - name: Build a static whisper-cli for the in-plugin voice setup

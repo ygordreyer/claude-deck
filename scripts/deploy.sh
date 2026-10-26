@@ -21,5 +21,5 @@ git push -q deck HEAD:refs/heads/incoming
 ssh "$DECK" 'cd ~/claude-deck && git merge -q --ff-only incoming'
 rsync -a --delete dist/ "$DECK":claude-deck/dist/
 ssh "$DECK" 'cd ~/claude-deck && D=~/homebrew/plugins/claude-deck && cp dist/* $D/dist/ &&
-  for f in steam_mcp.py deck_tools.py package.json main.py; do cat $f > $D/$f; done && grep version $D/package.json &&
+  for f in steam_mcp.py deck_tools.py fw_transcribe.py package.json main.py; do cat $f > $D/$f; done && grep version $D/package.json &&
   python3 reload.py'

@@ -4,6 +4,7 @@ Plain stdlib (no decky import) so the MCP server can use it too.
 """
 import asyncio
 import glob
+import json
 import os
 import shutil
 import time
@@ -14,6 +15,10 @@ SHOTS = os.path.join(CACHE, "shots")
 WHISPER_DIR = os.path.join(HOME, ".local/share/claude-deck/whisper")
 WHISPER_BIN = os.path.join(WHISPER_DIR, "whisper-cli")
 WHISPER_MODEL = os.path.join(WHISPER_DIR, "ggml-base.en.bin")
+FW_DIR = os.path.join(HOME, ".local/share/claude-deck/faster-whisper")
+FW_PYTHON = os.path.join(FW_DIR, "venv/bin/python3")
+FW_MODEL = os.path.join(FW_DIR, "medium")
+FW_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fw_transcribe.py")
 PIPER_DIR = os.path.join(HOME, ".local/share/claude-deck/piper")
 PIPER_BIN = os.path.join(PIPER_DIR, "piper")
 PIPER_VOICE = os.path.join(PIPER_DIR, "en_US-lessac-medium.onnx")
@@ -162,23 +167,50 @@ class Recorder:
         return True
 
 
+def _faster_whisper_available():
+    return (os.path.isfile(FW_PYTHON) and os.path.isdir(FW_MODEL)
+            and os.path.isfile(os.path.join(FW_MODEL, "model.bin")))
+
+
+def voice_input_available():
+    return (_faster_whisper_available()
+            or (os.path.exists(WHISPER_BIN) and os.path.exists(WHISPER_MODEL)))
+
+
 async def transcribe(wav):
-    if not (os.path.exists(WHISPER_BIN) and os.path.exists(WHISPER_MODEL)):
+    if not voice_input_available():
         raise RuntimeError("Voice input isn't installed (whisper-cli or model missing)")
-    # Size the audio context to the clip: a 5 s question decodes ~2.5x faster than with the
-    # default 30 s window. 4 threads beats 8 on the Deck (SMT siblings, and a game is running).
-    try:
-        import wave
-        with wave.open(wav) as w:
-            secs = w.getnframes() / w.getframerate()
-        ctx = min(1500, max(256, -(-int(secs * 50 + 128) // 64) * 64))
-    except Exception:
-        ctx = 1500
-    code, out, err = await _run(WHISPER_BIN, "-m", WHISPER_MODEL, "-f", wav, "-l", "en",
-                                "-nt", "-np", "-t", "4", "-ac", str(ctx), timeout=120)
-    if code != 0:
-        raise RuntimeError(f"whisper failed: {err.strip()[-300:]}")
-    text = " ".join(line.strip() for line in out.splitlines() if line.strip())
+    if _faster_whisper_available():
+        code, out, err = await _run(FW_PYTHON, FW_SCRIPT, FW_MODEL, wav,
+                                    env=clean_env(), timeout=120)
+        if code != 0:
+            raise RuntimeError(f"faster-whisper failed: {err.strip()[-300:]}")
+        try:
+            text = json.loads(out)["text"]
+            if not isinstance(text, str):
+                raise ValueError("text must be a string")
+        except (ValueError, KeyError, TypeError) as e:
+            raise RuntimeError("faster-whisper returned invalid transcript JSON") from e
+    else:
+        # Size the audio context to the clip: a 5 s question decodes ~2.5x faster than with the
+        # default 30 s window. 4 threads beats 8 on the Deck (SMT siblings, and a game is running).
+        try:
+            import wave
+            with wave.open(wav) as w:
+                secs = w.getnframes() / w.getframerate()
+            ctx = min(1500, max(256, -(-int(secs * 50 + 128) // 64) * 64))
+        except Exception:
+            ctx = 1500
+        code, out, err = await _run(WHISPER_BIN, "-m", WHISPER_MODEL, "-f", wav, "-l", "en",
+                                    "-nt", "-np", "-t", "4", "-ac", str(ctx), timeout=120)
+        if code != 0:
+            raise RuntimeError(f"whisper failed: {err.strip()[-300:]}")
+        text = out
+    return _clean_transcript(text)
+
+
+def _clean_transcript(text):
+    text = " ".join(line.strip() for line in text.splitlines() if line.strip())
     # whisper marks silence/noise as [BLANK_AUDIO], (wind), etc.
     if text.strip("[]() .").upper() in ("", "BLANK_AUDIO", "SILENCE", "MUSIC"):
         return ""
