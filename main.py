@@ -443,6 +443,7 @@ class Plugin:
     # --- frontend API ----------------------------------------------------------
     async def get_state(self):
         await self._refresh_usage()
+        await self._prune_usage()
         return {"history": self.history, "running": self.running, "asks": list(self.asks.values()),
                 "usage": self.usage, "mode": self.mode, "model": self.model, "effort": self.effort, "theme": self.theme,
                 "voice": self.voice, "can_speak": self.speaker.available(), "speaking": self.speaker.active,
@@ -451,6 +452,11 @@ class Plugin:
                 "ptt_label": deck_tools.chord_label(self.ptt), "dictate_label": deck_tools.chord_label(self.dictate),
                 "remote_url": self.remote_url, "account": self.info.get("account"), "device_name": DEVICE_NAME,
                 "commands": self.commands}
+
+    async def _prune_usage(self):
+        usage = _current_usage(self.usage)
+        if usage != self.usage:
+            await self._set_usage(usage)
 
     async def _set_usage(self, usage):
         self.usage = _current_usage(usage)
@@ -463,11 +469,13 @@ class Plugin:
         await decky.emit("claude_usage", self.usage)
 
     async def _expire_usage(self, reset):
-        await asyncio.sleep(max(0, reset - time.time()))
+        while (wait := reset - time.time()) > 0:
+            await asyncio.sleep(wait)
         await self._set_usage(self.usage)
 
     async def _refresh_usage(self):
         async with self.usage_lock:
+            await self._prune_usage()
             now = time.monotonic()
             if self.usage_checked_at is not None and now - self.usage_checked_at < 60:
                 return
