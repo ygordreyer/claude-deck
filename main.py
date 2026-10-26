@@ -25,6 +25,9 @@ MODES = {"ask": "default", "edits": "acceptEdits", "plan": "plan", "auto": "auto
 MODELS = ("default", "opus", "fable", "sonnet", "haiku")
 THEMES = ("claude", "midnight", "tokyo", "minecraft", "steamos")
 VOICES = ("off", "voice", "always")
+# Terminal controls, app-owned session actions and internal workflow commands.
+HIDDEN_COMMANDS = frozenset(("login", "logout", "exit", "clear", "config", "terminal-setup", "vim", "ide",
+                             "color", "heapdump", "__remote-workflow", "workflow-launch-exec", "plugin-types"))
 # Hold-to-talk and dictation chords: presets like "l4r4", "off", or recorded "m:<low>:<high>" masks.
 GAMES_DIR = os.path.join(HOME, ".local/share/claude-deck/games")  # per-game notes Claude keeps
 REPO = "RyanWReid/claude-deck"
@@ -234,6 +237,23 @@ async def _image_block(path):
     return {"type": "image", "source": {"type": "base64", "media_type": media, "data": data}}
 
 
+def _commands_from_init(ev):
+    commands = {}
+    for field in ("slash_commands", "skills"):
+        items = ev.get(field)
+        for item in items if isinstance(items, list) else []:
+            name = item.get("name", "") if isinstance(item, dict) else item
+            if not isinstance(name, str):
+                continue
+            name = name.lstrip("/")
+            if not name or re.search(r"\s", name) or name in HIDDEN_COMMANDS:
+                continue
+            description = item.get("description", "") if isinstance(item, dict) else ""
+            if name not in commands or isinstance(description, str) and description:
+                commands[name] = {"name": name, "description": description if isinstance(description, str) else ""}
+    return [commands[name] for name in sorted(commands)]
+
+
 class Plugin:
     async def _main(self):
         self.proc = None
@@ -252,6 +272,7 @@ class Plugin:
         self.history = []
         self.usage = None
         self.info = {}
+        self.commands = []
         self.mode = "ask"
         self.model = "default"
         self.theme = "claude"
@@ -340,7 +361,7 @@ class Plugin:
                 "ptt": self.ptt, "dictate": self.dictate, "game_threads": self.game_threads,
                 "chat_title": self.chat_meta.get("title"), "chat_game": self.chat_meta.get("game"),
                 "ptt_label": deck_tools.chord_label(self.ptt), "dictate_label": deck_tools.chord_label(self.dictate),
-                "remote_url": self.remote_url, "account": self.info.get("account")}
+                "remote_url": self.remote_url, "account": self.info.get("account"), "commands": self.commands}
 
     async def send(self, prompt, context=None, screenshot=None, spoken=False):
         """Post a message. If Claude is busy it is answered next, like a chat.
@@ -376,6 +397,8 @@ class Plugin:
         return True
 
     def _with_context(self, prompt, context):
+        if prompt.startswith("/"):
+            return prompt  # The CLI needs the command first and its arguments unchanged.
         context = dict(context or {})
         m = re.search(r"appid (\d+)", str(context.get("Running game", "")))
         if m:
@@ -1193,11 +1216,18 @@ class Plugin:
                         await self._push("tool_error", _clip(c, 300))
         elif t == "system":
             sub = ev.get("subtype")
-            if sub == "compact_boundary":
+            if sub == "init":
+                self.commands = _commands_from_init(ev)
+                await decky.emit("claude_commands", self.commands)
+            elif sub == "compact_boundary":
                 await self._push("info", "Conversation compacted to save space")
             elif sub == "api_retry":
                 await decky.emit("claude_notice", f"Retrying… ({ev.get('error') or 'busy'})")
         elif t == "result":
+            if ev.get("local_command"):
+                self.inflight = max(0, self.inflight - 1)  # Local commands finish without a user echo.
+                if self.spoken:
+                    self.spoken.pop(0)
             self.turn_active = False
             self.turn_spoken = False
             self.turn_text = []

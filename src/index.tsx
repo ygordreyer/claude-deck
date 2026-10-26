@@ -60,6 +60,11 @@ interface Usage {
 type Mode = "ask" | "edits" | "plan" | "auto" | "trust";
 type Model = "default" | "opus" | "fable" | "sonnet" | "haiku";
 
+interface Command {
+  name: string;
+  description: string;
+}
+
 interface State {
   history: Entry[];
   running: boolean;
@@ -73,6 +78,7 @@ interface State {
   speaking: boolean;
   remote_url: string | null;
   ptt: Ptt;
+  commands: Command[];
 }
 
 type Ptt = string; // "l4r4", "off", or a recorded "m:<low>:<high>" combo
@@ -135,6 +141,7 @@ let history: Entry[] = [];
 let running = false;
 let streaming = ""; // the reply Claude is typing right now
 let asks: Ask[] = [];
+let commands: Command[] = [];
 let usage: Usage | null = null;
 let mode: Mode = "ask";
 let model: Model = "default";
@@ -164,6 +171,7 @@ function applyState(s: State) {
   history = s.history;
   running = s.running;
   asks = s.asks ?? [];
+  commands = s.commands ?? [];
   usage = s.usage ?? null;
   mode = s.mode ?? "ask";
   model = s.model ?? "default";
@@ -237,6 +245,7 @@ const handlers: [string, (x: any) => void][] = [
   ["claude_notice", (t: string) => ((notice = t), notify())],
   ["claude_mode", (m: Mode) => ((mode = m), notify())],
   ["claude_model", (m: Model) => ((model = m), notify())],
+  ["claude_commands", (c: Command[]) => ((commands = c), notify())],
   ["claude_speaking", (on: boolean) => ((speaking = on), notify())],
   ["claude_ptt", (e: any) => onPtt(e)],
   ["claude_chat", () => getState().then((st) => (applyState(st), (streaming = ""), notify()))],
@@ -844,6 +853,46 @@ function TurnView({ turn, live }: { turn: Turn; live: boolean }) {
 
 // --- composer -------------------------------------------------------------------------------------
 
+function SkillsList({ pick, close }: { pick: (name: string) => void; close: () => void }) {
+  useStore();
+  return (
+    <div className="cd-root" style={{ ...(themeVars(themeById(theme)) as CSSProperties), display: "flex", flexDirection: "column", gap: "10px", width: "560px", maxWidth: "80vw" }}>
+      <div style={{ fontFamily: v("display"), fontSize: "22px" }}>Skills</div>
+      <div style={{ color: v("dim"), fontSize: "13px" }}>Pick a skill or command, add any arguments, then send.</div>
+      {commands.length === 0 ? (
+        <div style={{ color: v("dim") }}>No skills or commands available yet. Send a message to start Claude.</div>
+      ) : (
+        <Focusable flow-children="vertical" style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "60vh", overflowY: "auto" }}>
+          {commands.map((c) => (
+            <DialogButton
+              key={c.name}
+              className="cd-btn"
+              style={{ ...ghostBtn, flexShrink: 0, height: "auto", minHeight: "48px", padding: "8px 14px", textAlign: "left" }}
+              onGamepadFocus={(e) => (e.target as HTMLElement).scrollIntoView({ block: "nearest" })}
+              onClick={() => pick(c.name)}
+            >
+              <Icon name="spark" size={16} color={v("accent")} />
+              <div style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere", whiteSpace: "normal" }}>
+                <div>/{c.name}</div>
+                {c.description && <div style={{ fontSize: "12px", color: v("dim"), whiteSpace: "normal" }}>{c.description}</div>}
+              </div>
+            </DialogButton>
+          ))}
+        </Focusable>
+      )}
+      <DialogButton className="cd-btn" style={ghostBtn} onClick={close}>Close</DialogButton>
+    </div>
+  );
+}
+
+function showSkills(pick: (name: string) => void) {
+  const modal = showModal(
+    <ModalRoot onCancel={() => modal.Close()} onEscKeypress={() => modal.Close()}>
+      <SkillsList pick={(name) => { modal.Close(); pick(name); }} close={() => modal.Close()} />
+    </ModalRoot>,
+  );
+}
+
 function Waveform({ label }: { label: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "3px", flex: 1, minWidth: 0 }}>
@@ -857,6 +906,7 @@ function Waveform({ label }: { label: string }) {
 
 function Composer({ compact }: { compact?: boolean }) {
   const [input, setInput] = useState("");
+  const [inputFocus, setInputFocus] = useState(0);
   const spokenDraft = useRef(false);
   const addSpoken = (t: string) => {
     spokenDraft.current = true;
@@ -899,8 +949,9 @@ function Composer({ compact }: { compact?: boolean }) {
       ) : (
         <div className="cd-field" style={{ flex: 1, minWidth: 0 }}>
           <TextField
+            key={inputFocus}
             value={input}
-            focusOnMount={!compact}
+            focusOnMount={!compact || inputFocus > 0}
             {...({ placeholder: running ? "Reply (sent when Claude finishes)" : compact ? "Ask Claude" : "Message Claude" } as object)}
             onChange={(e) => {
               setInput(e.target.value);
@@ -911,6 +962,21 @@ function Composer({ compact }: { compact?: boolean }) {
             }}
           />
         </div>
+      )}
+      {!listening && (
+        <DialogButton
+          className="cd-btn"
+          style={{ ...pill, padding: "0 8px" }}
+          onClick={() => showSkills((name) => {
+            setInput(`/${name} `);
+            spokenDraft.current = false;
+            setInputFocus((n) => n + 1);
+          })}
+          aria-label="Skills"
+        >
+          <Icon name="spark" size={16} />
+          {!compact && "Skills"}
+        </DialogButton>
       )}
       {!listening && !compact && (
         <DialogButton className="cd-btn" style={iconBtn} onClick={() => captureScreen()} aria-label="Attach screenshot">
