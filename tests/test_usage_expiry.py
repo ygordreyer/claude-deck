@@ -13,9 +13,14 @@ sys.modules["decky"] = types.SimpleNamespace(DECKY_PLUGIN_DIR=ROOT, DECKY_USER_H
 import main
 
 
+class _Plugin(main.Plugin):
+    def __getattr__(self, name):  # state fields other features add stay None here
+        return None
+
+
 class UsageExpiryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.plugin = main.Plugin()
+        self.plugin = _Plugin()
         self.plugin.usage_lock = asyncio.Lock()
         self.plugin.usage_checked_at = None
         self.plugin.usage_expiry = None
