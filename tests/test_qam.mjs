@@ -20,6 +20,8 @@ const patcher = { exports: {}, console: { debug() {} } };
 vm.runInNewContext(compile(readFileSync(new URL("../node_modules/@decky/ui/src/utils/patcher.ts", import.meta.url), "utf8")), patcher);
 
 const MUSIC = 7;
+const FRIENDS = 3;
+const HELP = 6;
 const DECKY = 999;
 const CLAUDE = 0x434c4155;
 const music = () => ({ key: MUSIC, title: "Localized Soundtracks" });
@@ -36,7 +38,7 @@ function fixture(tabsHook = hook()) {
     document: { getElementById: id => ({ getAttribute: () => selected.has(id) ? "true" : "false" }) },
     console: { warn: (...args) => warnings.push(args) },
     afterPatch: patcher.exports.afterPatch,
-    QuickAccessTab: { Music: MUSIC, Decky: DECKY },
+    QuickAccessTab: { Music: MUSIC, Friends: FRIENDS, Help: HELP, Decky: DECKY },
     staticClasses: { Title: "title" },
     ErrorBoundary() {}, Panel() {}, TabIcon() {},
     Navigation: { OpenQuickAccessMenu: tab => navigation.push(tab) },
@@ -89,6 +91,49 @@ test("no native Soundtracks appends Claude, preserves Decky entries keyed 7, and
   assert.deepEqual(tabs, [pluginMusic, decky]);
 });
 
+test("Friends and Help hide by native key while Claude takes Soundtracks' place across arrays and reloads", () => {
+  const f = fixture();
+  const pluginFriends = { key: FRIENDS, decky: true };
+  const pluginHelp = { key: String(HELP), decky: true };
+  const lookalike = { key: 42, title: "Friends" };
+  const originals = [
+    [{ key: 0 }, { key: FRIENDS }, { key: 4 }, music(), { key: HELP }, decky],
+    [{ key: String(HELP) }, music(), { key: String(FRIENDS) }, decky],
+    [music(), { key: HELP }, decky, { key: FRIENDS }],
+    [pluginFriends, { key: FRIENDS }, pluginHelp, { key: HELP }, lookalike, decky],
+  ];
+  const arrays = originals.map(tabs => tabs.slice());
+  const expected = [[0, 4, CLAUDE, DECKY], [CLAUDE, DECKY], [CLAUDE, DECKY], [FRIENDS, String(HELP), 42, DECKY, CLAUDE]];
+  for (let reload = 0; reload < 2; reload++) {
+    const remove = f.subject.installClaudeQam();
+    for (const [i, tabs] of arrays.entries()) {
+      for (let render = 0; render < 3; render++) f.hook.render(tabs, false);
+      assert.deepEqual(tabs.map(t => t.key), expected[i]);
+      assert.equal(tabs.filter(t => t.key === CLAUDE).length, 1);
+    }
+    remove();
+    remove();
+    for (const [i, tabs] of arrays.entries()) {
+      assert.deepEqual(tabs, originals[i]);
+      originals[i].forEach((tab, index) => assert.equal(tabs[index], tab));
+    }
+  }
+});
+
+test("unload restores hidden objects relative to surviving tabs after Claude is displaced", () => {
+  const f = fixture();
+  const original = [{ key: FRIENDS }, { key: 4 }, music(), { key: HELP }, decky];
+  const tabs = original.slice();
+  const remove = f.subject.installClaudeQam();
+  f.hook.render(tabs, false);
+  tabs.splice(tabs.findIndex(t => t.key === CLAUDE), 1);
+  const added = { key: 42 };
+  tabs.unshift(added);
+  remove();
+  assert.deepEqual(tabs, [added, ...original]);
+  original.forEach((tab, index) => assert.equal(tabs[index + 1], tab));
+});
+
 test("missing hook or Decky registration is a warned no-op", () => {
   for (const missing of [null, { render() {}, tabs: [] }]) {
     const f = fixture(missing);
@@ -98,21 +143,45 @@ test("missing hook or Decky registration is a warned no-op", () => {
   }
 });
 
-test("collision, frozen, sealed, and read-only slot arrays retain Soundtracks", () => {
-  for (const kind of ["collision", "frozen", "sealed", "readonly"]) {
+test("collision, immutable, read-only, and accessor arrays retain every original tab", () => {
+  for (const kind of ["collision", "frozen", "sealed", "readonly", "late-readonly", "length-readonly", "accessor", "nonextensible"]) {
     const f = fixture();
     const original = music();
-    const tabs = [original, decky];
+    const tabs = [{ key: FRIENDS }, original, { key: HELP }, decky];
     if (kind === "collision") tabs.push({ key: String(CLAUDE) });
     if (kind === "frozen") Object.freeze(tabs);
     if (kind === "sealed") Object.seal(tabs);
     if (kind === "readonly") Object.defineProperty(tabs, 0, { writable: false });
+    if (kind === "late-readonly") Object.defineProperty(tabs, 3, { writable: false });
+    if (kind === "length-readonly") Object.defineProperty(tabs, "length", { writable: false });
+    if (kind === "accessor") Object.defineProperty(tabs, 3, { get: () => decky });
+    if (kind === "nonextensible") Object.preventExtensions(tabs);
+    const before = tabs.slice();
     const remove = f.subject.installClaudeQam();
     f.hook.render(tabs, false);
-    assert.equal(tabs[0], original);
+    assert.deepEqual(tabs, before);
     assert.equal(f.subject.ready(), false);
     assert.equal(f.warnings.length, 1);
     remove();
+    assert.deepEqual(tabs, before);
+  }
+});
+
+test("selected Friends and Help defer all changes until selection moves", () => {
+  for (const key of [FRIENDS, HELP]) {
+    const f = fixture();
+    const original = [{ key: FRIENDS }, music(), { key: HELP }, decky];
+    const tabs = original.slice();
+    const remove = f.subject.installClaudeQam();
+    f.selected.add(`quickaccess_tab_${key}`);
+    f.hook.render(tabs, true);
+    assert.deepEqual(tabs, original);
+    assert.equal(f.subject.ready(), false);
+    f.selected.clear();
+    f.hook.render(tabs, true);
+    assert.deepEqual(tabs.map(t => t.key), [CLAUDE, DECKY]);
+    remove();
+    original.forEach((tab, index) => assert.equal(tabs[index], tab));
   }
 });
 
@@ -135,13 +204,15 @@ test("active Soundtracks defers until the next render after selection changes", 
 test("render exception retains Soundtracks and warns without breaking Decky", () => {
   const f = fixture();
   const original = music();
-  const tabs = [original, decky];
+  const tabs = [{ key: FRIENDS }, original, { key: HELP }, decky];
+  const before = tabs.slice();
   f.context.document.getElementById = () => { throw new Error("document unavailable"); };
   const remove = f.subject.installClaudeQam();
   assert.equal(f.hook.render(tabs, true), "original result");
-  assert.equal(tabs[0], original);
+  assert.deepEqual(tabs, before);
   assert.equal(f.warnings.length, 1);
   remove();
+  assert.deepEqual(tabs, before);
 });
 
 test("reload does not duplicate Claude and unload restores a displaced original", () => {
@@ -158,6 +229,20 @@ test("reload does not duplicate Claude and unload restores a displaced original"
   assert.equal(tabs.filter(t => t.key === CLAUDE).length, 1);
   remove();
   assert.deepEqual(tabs, [original, decky]);
+});
+
+test("tracking exception leaves Friends, Help, and Soundtracks untouched", () => {
+  const f = fixture();
+  const original = [{ key: FRIENDS }, music(), { key: HELP }, decky];
+  const tabs = original.slice();
+  f.context.WeakRef = class { constructor() { throw new Error("tracking unavailable"); } };
+  const remove = f.subject.installClaudeQam();
+  assert.equal(f.hook.render(tabs, false), "original result");
+  assert.deepEqual(tabs, original);
+  assert.equal(f.subject.ready(), false);
+  assert.equal(f.warnings.length, 1);
+  remove();
+  assert.deepEqual(tabs, original);
 });
 
 test("panel visibility requires the selected tab, intersection, and an open menu", () => {

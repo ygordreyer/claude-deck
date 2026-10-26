@@ -1986,7 +1986,7 @@ let claudeQamReady = false;
 function installClaudeQam(): () => void {
   let active = true;
   let patch: Patch | undefined;
-  let changed: { ref: QamArrayRef; music?: QamTab; index: number }[] = [];
+  let changed: { ref: QamArrayRef; original: QamTab[] }[] = [];
   const Ref = (globalThis as any).WeakRef as (new (tabs: QamTab[]) => QamArrayRef) | undefined;
   const own: QamTab = {
     key: CLAUDE_QAM_TAB,
@@ -1994,7 +1994,17 @@ function installClaudeQam(): () => void {
     tab: <TabIcon />,
     panel: <ErrorBoundary><Panel topLevel /></ErrorBoundary>,
   };
-  const isMusic = (t: QamTab) => !t?.decky && String(t?.key) === String(QuickAccessTab.Music);
+  const hidden = [QuickAccessTab.Friends, QuickAccessTab.Help].map(String);
+  const affected = [String(QuickAccessTab.Music), ...hidden];
+  const nativeKey = (t: QamTab) => t?.decky ? undefined : String(t?.key);
+  const isMusic = (t: QamTab) => nativeKey(t) === String(QuickAccessTab.Music);
+  const replace = (tabs: QamTab[], next: QamTab[]) => {
+    // Validate every slot before splice can shift or delete any original objects.
+    if (!Object.isExtensible(tabs) || !Object.getOwnPropertyDescriptor(tabs, "length")?.writable ||
+        Array.from({ length: tabs.length }, (_, i) => Object.getOwnPropertyDescriptor(tabs, i))
+          .some(d => !d?.writable || !d.configurable)) throw new Error("QAM tabs are not writable");
+    Array.prototype.splice.call(tabs, 0, tabs.length, ...next);
+  };
   const warned = new Set<string>();
   const warn = (message: string, error?: unknown) => {
     if (warned.has(message)) return;
@@ -2013,11 +2023,15 @@ function installClaudeQam(): () => void {
       const tabs = r.ref.deref();
       if (!tabs) continue;
       try {
-        const i = tabs.indexOf(own);
-        if (r.music && !tabs.some(isMusic)) {
-          if (i >= 0) tabs[i] = r.music;
-          else tabs.splice(Math.min(r.index, tabs.length), 0, r.music);
-        } else if (i >= 0) tabs.splice(i, 1);
+        const next = tabs.filter(t => t !== own);
+        for (const [i, tab] of r.original.entries()) {
+          const key = nativeKey(tab);
+          if (!affected.includes(key!) || next.some(t => nativeKey(t) === key)) continue;
+          const after = r.original.slice(i + 1).find(t => next.includes(t));
+          const before = r.original.slice(0, i).reverse().find(t => next.includes(t));
+          next.splice(after ? next.indexOf(after) : before ? next.indexOf(before) + 1 : Math.min(i, next.length), 0, tab);
+        }
+        replace(tabs, next);
       } catch (e) {
         warn("QAM restore failed", e);
       }
@@ -2038,25 +2052,22 @@ function installClaudeQam(): () => void {
           warn("QAM tabs are immutable");
           return ret;
         }
-        if (visible && document.getElementById(`quickaccess_tab_${QuickAccessTab.Music}`)
-          ?.getAttribute("aria-selected") === "true") return ret;
+        if (visible && affected.some(key => document.getElementById(`quickaccess_tab_${key}`)
+          ?.getAttribute("aria-selected") === "true")) return ret;
         if (tabs.includes(own)) return ret;
         if (tabs.some(t => String(t?.key) === String(CLAUDE_QAM_TAB))) {
           warn("QAM tab key collision");
           return ret;
         }
-        const i = tabs.findIndex(isMusic);
+        const original = tabs.slice();
+        const i = original.findIndex(isMusic);
+        const next = original.slice();
+        if (i >= 0) next[i] = own;
+        else next.push(own);
         changed = changed.filter(r => r.ref.deref());
-        let r = changed.find(r => r.ref.deref() === tabs);
-        if (!r) {
-          r = { ref: new Ref(tabs), index: i >= 0 ? i : tabs.length };
-          changed.push(r);
-        }
-        if (i >= 0) {
-          r.music = tabs[i];
-          r.index = i;
-          tabs[i] = own;
-        } else tabs.push(own);
+        const record = changed.find(r => r.ref.deref() === tabs) ?? { ref: new Ref(tabs), original };
+        replace(tabs, next.filter(t => !hidden.includes(nativeKey(t)!)));
+        if (!changed.includes(record)) changed.push(record);
         claudeQamReady = true;
       } catch (e) {
         warn("top-level tab render failed", e);
