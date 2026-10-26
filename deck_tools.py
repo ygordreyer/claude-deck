@@ -162,9 +162,8 @@ class Recorder:
         return True
 
 
-async def transcribe(wav):
-    if not (os.path.exists(WHISPER_BIN) and os.path.exists(WHISPER_MODEL)):
-        raise RuntimeError("Voice input isn't installed (whisper-cli or model missing)")
+# TEMP speech bench: share the production context calculation without changing dictation.
+def _whisper_context(wav):
     # Size the audio context to the clip: a 5 s question decodes ~2.5x faster than with the
     # default 30 s window. 4 threads beats 8 on the Deck (SMT siblings, and a game is running).
     try:
@@ -174,6 +173,13 @@ async def transcribe(wav):
         ctx = min(1500, max(256, -(-int(secs * 50 + 128) // 64) * 64))
     except Exception:
         ctx = 1500
+    return ctx
+
+
+async def transcribe(wav):
+    if not (os.path.exists(WHISPER_BIN) and os.path.exists(WHISPER_MODEL)):
+        raise RuntimeError("Voice input isn't installed (whisper-cli or model missing)")
+    ctx = _whisper_context(wav)  # TEMP speech bench
     code, out, err = await _run(WHISPER_BIN, "-m", WHISPER_MODEL, "-f", wav, "-l", "en",
                                 "-nt", "-np", "-t", "4", "-ac", str(ctx), timeout=120)
     if code != 0:
@@ -192,6 +198,122 @@ async def transcribe(wav):
     if not re.search(r"[A-Za-z]{2}", text):
         return ""
     return text
+
+
+# TEMP speech bench: all temporary discovery, subprocesses and evidence live in this block.
+_BENCH_FASTER_SCRIPT = """
+# TEMP speech bench: decode PCM ourselves to avoid faster-whisper/PyAV path incompatibility.
+import json, os, sys, wave
+import numpy as np
+from faster_whisper import WhisperModel
+with wave.open(sys.argv[2], 'rb') as w:
+    if w.getsampwidth() != 2:
+        raise ValueError('Expected 16-bit PCM')
+    rate, channels = w.getframerate(), w.getnchannels()
+    audio = np.frombuffer(w.readframes(w.getnframes()), dtype='<i2').astype(np.float32) / 32768.0
+if channels > 1:
+    audio = audio.reshape(-1, channels).mean(axis=1)
+if rate != 16000:
+    audio = np.interp(np.arange(0, len(audio), rate / 16000), np.arange(len(audio)), audio).astype(np.float32)
+model = WhisperModel(sys.argv[1], device='cpu', compute_type='int8',
+                     cpu_threads=min(8, os.cpu_count() or 1), local_files_only=True)
+segments, _ = model.transcribe(audio, beam_size=1, vad_filter=True, language='en')
+print(json.dumps({'text': ' '.join(s.text.strip() for s in segments)}))
+"""
+
+
+def _speech_bench_engines(bench_dir=None, python=None, models_dir=None):
+    bench_dir = bench_dir or os.path.join(WHISPER_DIR, "bench")
+    old = os.path.join(HOME, "homebrew/data/decky-claude")
+    python = python or os.path.join(old, "voice-venv/bin/python3")
+    models_dir = models_dir or os.path.join(old, "models")
+    models = [p for p in glob.glob(os.path.join(bench_dir, "ggml-*.bin")) if os.path.isfile(p)]
+    engines = [{"engine": "whisper.cpp", "model": os.path.basename(p)[5:-4],
+                "path": p, "size_mb": round(os.path.getsize(p) / 1024**2, 1)}
+               for p in sorted(models, key=lambda p: (os.path.getsize(p), p))]
+    if os.path.isfile(python):
+        for name in ("small", "medium"):
+            snapshots = sorted(p for p in glob.glob(os.path.join(
+                models_dir, f"models--Systran--faster-whisper-{name}", "snapshots", "*")) if os.path.isdir(p))
+            if snapshots:
+                path = snapshots[-1]
+                size = sum(os.path.getsize(os.path.join(root, f))
+                           for root, _, files in os.walk(path) for f in files)
+                engines.append({"engine": "faster-whisper", "model": name, "path": path,
+                                "python": python, "size_mb": round(size / 1024**2, 1)})
+    return engines
+
+
+async def _speech_bench_run(*args):
+    p = await asyncio.create_subprocess_exec(
+        *args, env=clean_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(p.communicate(), 300)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as e:
+        if p.returncode is None:
+            p.kill()
+        await p.communicate()
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        raise RuntimeError("Model timed out after 300 seconds") from e
+    return p.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+async def speech_bench(wav, on_progress=None):
+    import inspect
+    import json
+    import wave
+
+    with wave.open(wav, "rb") as w:
+        secs = w.getnframes() / w.getframerate()
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    directory = os.path.join(HOME, "speech-bench")
+    os.makedirs(directory, exist_ok=True)
+    saved = os.path.join(directory, timestamp + ".wav")
+    # Keep an earlier clip if two short runs finish in the same second.
+    while os.path.exists(saved):
+        await asyncio.sleep(0.1)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        saved = os.path.join(directory, timestamp + ".wav")
+    shutil.copyfile(wav, saved)
+    ctx = _whisper_context(saved)
+    engines = _speech_bench_engines()
+    results = []
+    with open(os.path.join(directory, "speech-bench.log"), "a", encoding="utf-8") as log:
+        log.write(f"\n{timestamp}\twav: {saved}\tclip seconds: {secs:.1f}\n")
+        log.write("engine\tmodel\tsize MB\tseconds\ttext / error\n")
+        if not engines:
+            log.write("error: No speech benchmark models found\n")
+            raise RuntimeError("No speech benchmark models found")
+        for index, engine in enumerate(engines, 1):
+            if on_progress:
+                pending = on_progress(index, len(engines), engine["model"])
+                if inspect.isawaitable(pending):
+                    await pending
+            result = {k: engine[k] for k in ("engine", "model", "size_mb")}
+            result.update(text="", error=None)
+            if engine["engine"] == "whisper.cpp":
+                args = (WHISPER_BIN, "-m", engine["path"], "-f", saved, "-l", "en",
+                        "-nt", "-np", "-t", "4", "-ac", str(ctx))
+            else:
+                args = (engine["python"], "-c", _BENCH_FASTER_SCRIPT, engine["path"], saved)
+            started = time.monotonic()
+            try:
+                code, out, err = await _speech_bench_run(*args)
+                if code:
+                    raise RuntimeError(err.strip()[-500:] or f"Process exited with code {code}")
+                result["text"] = (json.loads(out)["text"] if engine["engine"] == "faster-whisper"
+                                  else " ".join(line.strip() for line in out.splitlines() if line.strip()))
+            except Exception as e:
+                result["error"] = str(e)
+            result["seconds"] = round(time.monotonic() - started, 1)
+            results.append(result)
+            transcript = (result["error"] or result["text"]).replace("\n", " ").replace("\t", " ")
+            log.write(f"{result['engine']}\t{result['model']}\t{result['size_mb']}\t"
+                      f"{result['seconds']:.1f}\t{transcript}\n")
+            log.flush()
+    return results
+# TEMP speech bench end.
 
 
 # --- spoken replies -------------------------------------------------------------------------

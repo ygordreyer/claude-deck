@@ -92,6 +92,31 @@ const getState = callable<[], State>("get_state");
 const send = callable<[prompt: string, context: Record<string, string>, screenshot: string | null, spoken: boolean], boolean>("send");
 const setVoiceCall = callable<[voice: Voice], boolean>("set_voice");
 const stopSpeaking = callable<[], boolean>("stop_speaking");
+// TEMP speech bench: transient comparison state and backend calls.
+interface BenchResult {
+  engine: "whisper.cpp" | "faster-whisper";
+  model: string;
+  size_mb: number;
+  seconds: number;
+  text: string;
+  error: string | null;
+}
+interface BenchState {
+  phase: "idle" | "recording" | "running" | "done" | "error";
+  results: BenchResult[];
+  clip_seconds?: number;
+  index?: number;
+  total?: number;
+  model?: string;
+  message?: string;
+}
+const benchStart = callable<[], { ok?: boolean; error?: string }>("bench_start");
+const benchStop = callable<[], { ok?: boolean; error?: string }>("bench_stop");
+const benchLast = callable<[], BenchState>("bench_last");
+let bench: BenchState = { phase: "idle", results: [] };
+let benchPending = false;
+let benchMessage = "";
+// TEMP speech bench end.
 const setPttCall = callable<[chord: Ptt], boolean>("set_ptt");
 const setDictateCall = callable<[chord: Ptt], boolean>("set_dictate");
 const captureChord = callable<[role: string], { spec?: string; label?: string; error?: string }>("capture_chord");
@@ -206,6 +231,14 @@ function useStore() {
       applyState(s);
       notify();
     });
+    // TEMP speech bench: reopening restores results without overwriting newer live events.
+    const beforeBench = bench;
+    benchLast().then((state) => {
+      if (bench === beforeBench) {
+        bench = state;
+        notify();
+      }
+    }).catch(() => {});
     return () => {
       subscribers.delete(f);
       viewers--;
@@ -256,6 +289,8 @@ const handlers: [string, (x: any) => void][] = [
   ["claude_effort", (e: Effort) => ((effort = e), notify())],
   ["claude_commands", (c: Command[]) => ((commands = c), notify())],
   ["claude_speaking", (on: boolean) => ((speaking = on), notify())],
+  // TEMP speech bench
+  ["claude_bench", (state: BenchState) => ((bench = state), (benchMessage = ""), notify())],
   ["claude_ptt", (e: any) => onPtt(e)],
   ["claude_chat", () => getState().then((st) => (applyState(st), (streaming = ""), notify()))],
   ["claude_auth", onAuthEvent],
@@ -1703,6 +1738,50 @@ function Jobs() {
   );
 }
 
+// TEMP speech bench: controller-focusable results retain discovery/run order.
+function SpeechBench() {
+  async function toggle() {
+    if (benchPending || bench.phase === "running") return;
+    benchPending = true;
+    benchMessage = "";
+    notify();
+    try {
+      const result = await (bench.phase === "recording" ? benchStop() : benchStart());
+      if (result.error) benchMessage = result.error;
+    } catch (e) {
+      benchMessage = String(e);
+    } finally {
+      benchPending = false;
+      notify();
+    }
+  }
+  return (
+    <Stack gap={6} style={{ padding: "8px 0" }}>
+      <DialogButton className="cd-btn" style={{ ...ghostBtn, width: "100%", height: "auto", minHeight: "40px", padding: "8px 12px" }}
+        disabled={benchPending || bench.phase === "running"} onClick={toggle}>
+        {bench.phase === "recording" ? "Stop and compare" : bench.phase === "running"
+          ? bench.total ? `Comparing ${bench.index} of ${bench.total}: ${bench.model}` : "Comparing speech models…"
+          : "Test speech models"}
+      </DialogButton>
+      <div style={{ fontSize: "11px", color: v("dim") }}>Temporary. Say the same sentence you would normally dictate.</div>
+      {(benchMessage || bench.phase === "error") && (
+        <div style={{ fontSize: "12px", color: v("err") }}>{benchMessage || bench.message}</div>
+      )}
+      {bench.results.map((r) => (
+        <Focusable key={`${r.engine}:${r.model}`} onActivate={() => {}} className="cd-focus-soft"
+          style={{ padding: "8px", borderRadius: v("r-sm"), background: v("sunken") }}>
+          <div style={{ fontSize: "12px" }}>{r.model} · {r.seconds.toFixed(1)} s · {r.size_mb} MB</div>
+          <div style={{ fontSize: "10px", color: v("dim") }}>{r.engine}</div>
+          <div style={{ fontSize: "11px", color: v(r.error ? "err" : "body"), whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+            {r.error || r.text}
+          </div>
+        </Focusable>
+      ))}
+    </Stack>
+  );
+}
+// TEMP speech bench end.
+
 function Panel() {
   useStore();
   const app = Router.MainRunningApp;
@@ -1816,6 +1895,8 @@ function Panel() {
       <Jobs />
 
       <PanelSection title="Settings">
+        {/* TEMP speech bench */}
+        <SpeechBench />
         <PanelSectionRow>
           <DropdownItem
             label="Model"
