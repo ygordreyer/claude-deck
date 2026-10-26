@@ -59,6 +59,7 @@ interface Usage {
 
 type Mode = "ask" | "edits" | "plan" | "auto" | "trust";
 type Model = "default" | "opus" | "fable" | "sonnet" | "haiku";
+type Effort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
 
 interface State {
   history: Entry[];
@@ -67,6 +68,7 @@ interface State {
   usage: Usage | null;
   mode: Mode;
   model: Model;
+  effort: Effort;
   theme: ThemeId;
   voice: Voice;
   can_speak: boolean;
@@ -111,6 +113,7 @@ const cancelJob = callable<[unit: string], boolean>("cancel_job");
 const answerCall = callable<[id: string, decision: string, answers: Record<string, string> | null], boolean>("answer");
 const setModeCall = callable<[mode: Mode], boolean>("set_mode");
 const setModelCall = callable<[model: Model], boolean>("set_model");
+const setEffortCall = callable<[effort: Effort], boolean>("set_effort");
 const setThemeCall = callable<[theme: ThemeId], boolean>("set_theme");
 const remoteCall = callable<[enabled: boolean], { url?: string; error?: string }>("remote");
 const snap = callable<[], { path?: string; error?: string }>("snap");
@@ -138,6 +141,7 @@ let asks: Ask[] = [];
 let usage: Usage | null = null;
 let mode: Mode = "ask";
 let model: Model = "default";
+let effort: Effort = "default";
 let theme: ThemeId = "claude";
 let voice: Voice = "voice";
 let canSpeak = false;
@@ -167,6 +171,7 @@ function applyState(s: State) {
   usage = s.usage ?? null;
   mode = s.mode ?? "ask";
   model = s.model ?? "default";
+  effort = s.effort ?? "default";
   theme = s.theme ?? "claude";
   voice = s.voice ?? "voice";
   canSpeak = !!s.can_speak;
@@ -237,6 +242,7 @@ const handlers: [string, (x: any) => void][] = [
   ["claude_notice", (t: string) => ((notice = t), notify())],
   ["claude_mode", (m: Mode) => ((mode = m), notify())],
   ["claude_model", (m: Model) => ((model = m), notify())],
+  ["claude_effort", (e: Effort) => ((effort = e), notify())],
   ["claude_speaking", (on: boolean) => ((speaking = on), notify())],
   ["claude_ptt", (e: any) => onPtt(e)],
   ["claude_chat", () => getState().then((st) => (applyState(st), (streaming = ""), notify()))],
@@ -509,6 +515,15 @@ const MODELS: { id: Model; label: string; desc: string }[] = [
 ];
 const modeInfo = (m: Mode) => MODES.find((x) => x.id === m) ?? MODES[0];
 const modelInfo = (m: Model) => MODELS.find((x) => x.id === m) ?? MODELS[0];
+const EFFORTS: { id: Effort; label: string }[] = [
+  { id: "default", label: "Default" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra high" },
+  { id: "max", label: "Max" },
+];
+const effortInfo = (e: Effort) => EFFORTS.find((x) => x.id === e) ?? EFFORTS[0];
 
 function chooseMode(m: Mode) {
   mode = m;
@@ -527,6 +542,24 @@ function chooseModel(m: Model) {
       notify();
     }
     toaster.toast({ title: "Claude", body: ok ? `Now using ${modelInfo(m).label}` : `Couldn't switch to ${modelInfo(m).label}` });
+  });
+}
+
+function chooseEffort(e: Effort) {
+  if (e === effort) return;
+  const prev = effort;
+  effort = e;
+  notify();
+  setEffortCall(e).then((ok) => {
+    if (!ok) {
+      effort = prev;
+      notify();
+    }
+    toaster.toast({ title: "Claude", body: ok ? `Effort set to ${effortInfo(e).label}` : `Couldn't switch effort to ${effortInfo(e).label}` });
+  }).catch(() => {
+    effort = prev;
+    notify();
+    toaster.toast({ title: "Claude", body: "Couldn't change effort" });
   });
 }
 
@@ -1019,6 +1052,11 @@ function ChatPage() {
           <DialogButton className="cd-btn" style={pill} onClick={menu("Model", MODELS, model, chooseModel)}>
             <Icon name="chip" size={16} />
             {modelInfo(model).label}
+            <Icon name="chevronDown" size={14} color={v("faint")} />
+          </DialogButton>
+          <DialogButton className="cd-btn" style={pill} onClick={menu("Effort", EFFORTS, effort, chooseEffort)} aria-label={`Effort: ${effortInfo(effort).label}`}>
+            <Icon name="gauge" size={16} />
+            Effort: {effortInfo(effort).label}
             <Icon name="chevronDown" size={14} color={v("faint")} />
           </DialogButton>
           <DialogButton className="cd-btn" style={pill} onClick={menu("Mode", MODES, mode, chooseMode)}>
@@ -1720,6 +1758,15 @@ function Panel() {
         </PanelSectionRow>
         <PanelSectionRow>
           <DropdownItem
+            label="Effort"
+            description={effort === "default" ? "Claude Code's default effort. Changes apply to the next reply on supported models." : "How much reasoning Claude uses. Changes apply to the next reply on supported models."}
+            rgOptions={EFFORTS.map((e) => ({ data: e.id, label: e.label }))}
+            selectedOption={effort}
+            onChange={(o) => chooseEffort(o.data)}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <DropdownItem
             label="Mode"
             description={modeInfo(mode).desc}
             rgOptions={MODES.map((m) => ({ data: m.id, label: m.label }))}
@@ -1825,10 +1872,11 @@ export default definePlugin(() => {
     openChat,
     theme: chooseTheme,
     model: chooseModel,
+    effort: chooseEffort,
     mode: chooseMode,
     voice: chooseVoice,
     submit,
-    state: () => ({ mic, running, speaking, theme, model, mode, voice, ptt }),
+    state: () => ({ mic, running, speaking, theme, model, effort, mode, voice, ptt }),
   };
   getState().then((s) => {
     applyState(s);

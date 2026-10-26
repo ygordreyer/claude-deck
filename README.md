@@ -157,6 +157,7 @@ a 7-inch screen; long ones scroll a paragraph at a time with the d-pad.
 - **Continue on phone:** a QR code opens the same live session in the Claude app.
 - **Plan usage:** your 5-hour and weekly limits, with reset times.
 - **Model picker:** Default, Fable, Opus, Sonnet or Haiku, switched mid-conversation.
+- **Effort picker:** Default, Low, Medium, High, Extra high or Max, applied to the next reply on supported models.
 
 ## Themes
 
