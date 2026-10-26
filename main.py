@@ -314,6 +314,9 @@ async def _image_block(path):
 
 def _commands_from_init(ev):
     commands = {}
+    terminal = ev.get("terminal_slash_commands")
+    hidden = HIDDEN_COMMANDS.union(n.lstrip("/") for n in terminal if isinstance(n, str)) \
+        if isinstance(terminal, list) else HIDDEN_COMMANDS
     for field in ("slash_commands", "skills"):
         items = ev.get(field)
         for item in items if isinstance(items, list) else []:
@@ -321,7 +324,7 @@ def _commands_from_init(ev):
             if not isinstance(name, str):
                 continue
             name = name.lstrip("/")
-            if not name or re.search(r"\s", name) or name in HIDDEN_COMMANDS:
+            if not name or re.search(r"\s", name) or name in hidden:
                 continue
             description = item.get("description", "") if isinstance(item, dict) else ""
             if name not in commands or isinstance(description, str) and description:

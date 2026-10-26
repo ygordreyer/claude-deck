@@ -43,6 +43,10 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c["name"] for c in main._commands_from_init(ev)],
                          ["compact", "context", "plugin:clear"])
 
+    def test_terminal_commands_from_init_are_hidden(self):
+        ev = {"slash_commands": ["statusline", "compact"], "terminal_slash_commands": ["statusline"]}
+        self.assertEqual(main._commands_from_init(ev), [{"name": "compact", "description": ""}])
+
     def test_invalid_entries_are_ignored(self):
         ev = {"skills": [None, 3, {}, {"name": None}, "", "/", "two words",
                          {"name": "check", "description": None}]}
